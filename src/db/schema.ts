@@ -29,6 +29,7 @@ export const customers = sqliteTable('customers', {
   name: text('name').notNull(),
   email: text('email').notNull().unique(),
   phone: text('phone'),
+  stripe_customer_id: text('stripe_customer_id'), // NEW: For Stripe billing
   driver_license_hash: text('driver_license_hash'),
   status: text('status').default('Active'), // Active, VIP, Blacklisted
   blacklist_reason: text('blacklist_reason'),
@@ -42,12 +43,26 @@ export const bookings = sqliteTable('bookings', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   vehicle_id: integer('vehicle_id').notNull().references(() => vehicles.id),
   customer_id: integer('customer_id').notNull().references(() => customers.id),
+  stripe_payment_intent_id: text('stripe_payment_intent_id'), // NEW: Payment tracking
+  deposit_status: text('deposit_status').default('Pending'), // Pending, Held, Released, Captured
   start_date: text('start_date').notNull(),
   end_date: text('end_date').notNull(),
   status: text('status').default('Pending'), // Pending, Confirmed, Conflict, Cancelled, Completed
   channel: text('channel').notNull(), // Localrent, Karpadu, Direct
   total_amount: real('total_amount').notNull(),
   profit_margin: real('profit_margin'),
+  created_at: text('created_at').notNull().default('CURRENT_TIMESTAMP'),
+});
+
+// NEW: Communications Log (Twilio/Resend)
+export const communication_logs = sqliteTable('communication_logs', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  customer_id: integer('customer_id').notNull().references(() => customers.id),
+  booking_id: integer('booking_id').references(() => bookings.id),
+  type: text('type').notNull(), // SMS, Email
+  direction: text('direction').notNull(), // Outbound, Inbound
+  content: text('content').notNull(),
+  status: text('status').default('Sent'), // Sent, Delivered, Failed
   created_at: text('created_at').notNull().default('CURRENT_TIMESTAMP'),
 });
 

@@ -5,7 +5,8 @@ import {
   Filter,
   Download,
   Calendar as CalendarIcon,
-  FileText
+  FileText,
+  CreditCard
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { format } from 'date-fns';
@@ -17,13 +18,17 @@ export function BookingsTable() {
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  const loadBookings = () => {
     fetch('/api/bookings')
       .then(res => res.json())
       .then(data => {
         setBookings(data);
         setLoading(false);
       });
+  };
+
+  useEffect(() => {
+    loadBookings();
   }, []);
 
   const handleDownloadContract = async (bookingId: number) => {
@@ -47,6 +52,24 @@ export function BookingsTable() {
     } catch (e) {
       console.error(e);
       alert('Failed to download contract.');
+    }
+  };
+
+  const handleHoldDeposit = async (bookingId: number, amount: number) => {
+    try {
+      const res = await fetch('/api/finance/hold-deposit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bookingId, amount })
+      });
+      if (res.ok) {
+        alert('Deposit Held Successfully (Stripe Mock)');
+        loadBookings(); // Reload to show updated status
+      } else {
+        alert('Failed to hold deposit.');
+      }
+    } catch (e) {
+      console.error(e);
     }
   };
 
@@ -115,6 +138,9 @@ export function BookingsTable() {
                 <th className="h-12 px-4 text-left align-middle font-medium text-slate-500">
                   Status
                 </th>
+                <th className="h-12 px-4 text-left align-middle font-medium text-slate-500">
+                  Deposit
+                </th>
                 <th className="h-12 px-4 text-right align-middle font-medium text-slate-500">
                   Amount
                 </th>
@@ -160,11 +186,32 @@ export function BookingsTable() {
                       {booking.status}
                     </span>
                   </td>
+                  <td className="p-4 align-middle">
+                    <span
+                      className={cn(
+                        'inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border uppercase tracking-wider',
+                        booking.deposit_status === 'Held' ? 'bg-indigo-50 text-indigo-700 border-indigo-100' :
+                        booking.deposit_status === 'Captured' ? 'bg-rose-50 text-rose-700 border-rose-100' :
+                        'bg-slate-50 text-slate-600 border-slate-200'
+                      )}
+                    >
+                      {booking.deposit_status || 'Pending'}
+                    </span>
+                  </td>
                   <td className="p-4 align-middle text-right font-mono font-bold text-slate-900">
                     ${booking.total_amount.toFixed(2)}
                   </td>
                   <td className="p-4 align-middle text-right">
                     <div className="flex items-center justify-end gap-2">
+                      {booking.deposit_status === 'Pending' && (
+                        <button 
+                          onClick={() => handleHoldDeposit(booking.id, 500)}
+                          className="rounded-md p-2 hover:bg-slate-100 text-slate-500 transition-colors"
+                          title="Hold Security Deposit ($500)"
+                        >
+                          <CreditCard className="h-4 w-4 text-emerald-600" />
+                        </button>
+                      )}
                       <button 
                         onClick={() => handleDownloadContract(booking.id)}
                         className="rounded-md p-2 hover:bg-slate-100 text-slate-500 transition-colors"

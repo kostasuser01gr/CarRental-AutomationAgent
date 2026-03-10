@@ -42,6 +42,7 @@ export function initDb() {
       name TEXT NOT NULL,
       email TEXT UNIQUE NOT NULL,
       phone TEXT,
+      stripe_customer_id TEXT,
       driver_license_hash TEXT,
       status TEXT DEFAULT 'Active',
       blacklist_reason TEXT,
@@ -58,6 +59,8 @@ export function initDb() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       vehicle_id INTEGER NOT NULL,
       customer_id INTEGER NOT NULL,
+      stripe_payment_intent_id TEXT,
+      deposit_status TEXT DEFAULT 'Pending',
       start_date TEXT NOT NULL,
       end_date TEXT NOT NULL,
       status TEXT DEFAULT 'Pending',
@@ -67,6 +70,22 @@ export function initDb() {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (vehicle_id) REFERENCES vehicles(id),
       FOREIGN KEY (customer_id) REFERENCES customers(id)
+    );
+  `);
+
+  // Communication Logs
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS communication_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_id INTEGER NOT NULL,
+      booking_id INTEGER,
+      type TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      content TEXT NOT NULL,
+      status TEXT DEFAULT 'Sent',
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (customer_id) REFERENCES customers(id),
+      FOREIGN KEY (booking_id) REFERENCES bookings(id)
     );
   `);
 

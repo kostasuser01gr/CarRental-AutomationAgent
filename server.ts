@@ -1,5 +1,4 @@
 import { PDFDocument, rgb } from "pdf-lib";
-
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import { initDb, db, sqlite } from './src/db/index.ts';
@@ -9,9 +8,15 @@ import 'dotenv/config';
 import { GoogleGenAI } from '@google/genai';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
+import Stripe from 'stripe';
+import twilio from 'twilio';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-warlord-key';
+
+// Init External APIs (Graceful degradation if keys are missing for demo)
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || 'sk_test_dummy', { apiVersion: '2024-06-20' as any });
+const twilioClient = process.env.TWILIO_ACCOUNT_SID ? twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN) : null;
 
 // --- UTILS & MIDDLEWARE ---
 
@@ -23,6 +28,31 @@ async function logAction(userId: number | null, action: string, entityType: stri
     entity_id: entityId,
     details
   });
+}
+
+async function sendSMS(customerId: number, phone: string, message: string, bookingId?: number) {
+  try {
+    if (twilioClient) {
+      await twilioClient.messages.create({
+        body: message,
+        to: phone,
+        from: process.env.TWILIO_PHONE_NUMBER || '+1234567890'
+      });
+    } else {
+      console.log(`[Twilio Mock] SMS to ${phone}: ${message}`);
+    }
+    
+    await db.insert(schema.communication_logs).values({
+      customer_id: customerId,
+      booking_id: bookingId,
+      type: 'SMS',
+      direction: 'Outbound',
+      content: message,
+      status: 'Sent'
+    });
+  } catch (error) {
+    console.error('SMS Failed', error);
+  }
 }
 
 // JWT RBAC Middleware
@@ -134,7 +164,7 @@ async function startServer() {
         Check-In Photo: ${checkInPhotoUrl}
       `;
 
-      // Mocking Gemini Vision call for now (actual vision requires base64 or gs:// URIs, assuming public URLs for demo)
+      // Mocking Gemini Vision call for now
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash',
         contents: prompt,
@@ -145,6 +175,13 @@ async function startServer() {
       
       if (result.newDamageFound) {
         await logAction((req as any).user.id, 'DAMAGE_LOGGED', 'Vehicle', vehicleId, `Damage: ${result.damageDescription}. Cost: $${result.estimatedRepairCost}`);
+        
+        // Auto-Charge Stripe Deposit
+        const booking = await db.select().from(schema.bookings).where(eq(schema.bookings.vehicle_id, vehicleId)).orderBy(desc(schema.bookings.end_date)).limit(1);
+        if (booking.length && booking[0].stripe_payment_intent_id) {
+           console.log(`[Stripe Mock] Capturing $${result.estimatedRepairCost} from deposit hold: ${booking[0].stripe_payment_intent_id}`);
+           sqlite.prepare("UPDATE bookings SET deposit_status = 'Captured' WHERE id = ?").run(booking[0].id);
+        }
       }
 
       res.json(result);
@@ -186,7 +223,35 @@ async function startServer() {
     }
   });
 
-
+  // Finance API: Create Deposit Hold
+  app.post('/api/finance/hold-deposit', checkRole(['Warlord', 'Agent']), async (req, res) => {
+    try {
+      const { bookingId, amount } = req.body;
+      const booking = await db.select().from(schema.bookings).where(eq(schema.bookings.id, bookingId)).limit(1);
+      
+      if (!booking.length) return res.status(404).json({ error: 'Booking not found' });
+      
+      const customer = await db.select().from(schema.customers).where(eq(schema.customers.id, booking[0].customer_id)).limit(1);
+      
+      // Mock Stripe PaymentIntent creation for a "Hold" (auth and capture later)
+      const paymentIntentId = `pi_mock_${Date.now()}_deposit`;
+      
+      sqlite.prepare("UPDATE bookings SET deposit_status = 'Held', stripe_payment_intent_id = ? WHERE id = ?")
+        .run(paymentIntentId, bookingId);
+        
+      await logAction((req as any).user.id, 'DEPOSIT_HELD', 'Booking', bookingId, `Held $${amount} deposit via Stripe.`);
+      
+      // Send SMS Confirmation
+      if (customer[0] && customer[0].phone) {
+         await sendSMS(customer[0].id, customer[0].phone, `MiraCars: Your $${amount} security deposit has been authorized for booking #${bookingId}.`, bookingId);
+      }
+      
+      res.json({ success: true, paymentIntentId, status: 'Held' });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: 'Deposit failed' });
+    }
+  });
 
   // 2. Bookings API
   app.get('/api/bookings', async (req, res) => {
@@ -201,6 +266,7 @@ async function startServer() {
       total_amount: schema.bookings.total_amount,
       profit_margin: schema.bookings.profit_margin,
       created_at: schema.bookings.created_at,
+      deposit_status: schema.bookings.deposit_status,
       make: schema.vehicles.make,
       model: schema.vehicles.model,
       plate: schema.vehicles.plate,
@@ -271,7 +337,6 @@ async function startServer() {
 
   // Advanced Reports API
   app.get('/api/reports/financials', async (req, res) => {
-    // using raw sqlite for complex aggregations for ease initially
     const stats = sqlite.prepare(`
       SELECT 
         IFNULL(SUM(total_amount), 0) as total_revenue,
@@ -301,7 +366,7 @@ async function startServer() {
     res.json({ stats, channelStats, vehicleProfits });
   });
 
-  // 3. Customers API (Supports Blacklist Check)
+  // 3. Customers API
   app.get('/api/customers', async (req, res) => {
     const customers = await db.select().from(schema.customers);
     res.json(customers);
@@ -360,7 +425,6 @@ async function startServer() {
 
   app.get('/api/market-intelligence/scan', async (req, res) => {
     try {
-      // Simulate fetching current market context
       const prompt = `
         You are a market intelligence scraper for a car rental business.
         Simulate a real-time scan of local competitors (Hertz, Avis, Enterprise) for current availability and pricing in a major city today.
@@ -387,10 +451,7 @@ async function startServer() {
     const result = await db.insert(schema.pricing_rules).values({
       name, condition_type, condition_value, action_type, action_value
     });
-    // Drizzle doesn't return lastInsertRowid natively in all adapters easily without returning, 
-    // but better-sqlite3 wrapper does support .run() returning lastInsertRowid if configured. Let's do raw for log or ignore id
     await logAction((req as any).user.id, 'CREATE_PRICING_RULE', 'Pricing', 0, `Created rule: ${name}`);
-    
     res.json({ success: true });
   });
 
@@ -425,10 +486,8 @@ async function startServer() {
     }
   });
 
-  // 5. Conflict Resolution API (The Profit Maximizer)
-  
+  // 5. Conflict Resolution API
   app.get('/api/conflicts', (req, res) => {
-    // Keep this raw for now because of the complex self-join and date overlap
     const conflictsQuery = sqlite.prepare(`
       SELECT 
         v.id as vehicle_id, v.make, v.model, v.plate,
