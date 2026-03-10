@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/lib/auth';
-import { CarFront, Lock } from 'lucide-react';
+import { Fingerprint, Lock, ShieldAlert } from 'lucide-react';
 
 export function Login() {
   const [email, setEmail] = useState('');
@@ -26,7 +26,7 @@ export function Login() {
       const data = await res.json();
 
       if (!res.ok) {
-        throw new Error(data.error || 'Login failed');
+        throw new Error(data.error || 'Authentication sequence failed');
       }
 
       login(data.token, data.user);
@@ -39,46 +39,58 @@ export function Login() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-12 sm:px-6 lg:px-8">
-      <div className="w-full max-w-md space-y-8 rounded-2xl bg-white p-8 shadow-xl border border-slate-100">
+    <div className="flex min-h-screen items-center justify-center bg-quantum-900 px-4 py-12 sm:px-6 lg:px-8 relative overflow-hidden">
+      
+      {/* Background Grid */}
+      <div className="absolute inset-0 z-0 opacity-20" style={{
+        backgroundImage: `linear-gradient(rgba(0, 243, 255, 0.2) 1px, transparent 1px), linear-gradient(90deg, rgba(0, 243, 255, 0.2) 1px, transparent 1px)`,
+        backgroundSize: '40px 40px',
+        transform: 'perspective(500px) rotateX(60deg) translateY(-100px) translateZ(-200px)',
+        transformOrigin: 'top center'
+      }}></div>
+
+      <div className="w-full max-w-md space-y-8 glass-panel p-10 rounded-2xl relative z-10 neon-border before:absolute before:inset-0 before:bg-gradient-to-b before:from-neon-cyan/5 before:to-transparent before:rounded-2xl before:pointer-events-none">
+        
         <div className="text-center">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-slate-900">
-            <CarFront className="h-6 w-6 text-white" />
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-quantum-800 border border-neon-cyan/50 shadow-[0_0_20px_rgba(0,243,255,0.4)] relative">
+            <div className="absolute inset-0 rounded-full border border-neon-cyan animate-ping opacity-50"></div>
+            <Fingerprint className="h-8 w-8 text-neon-cyan neon-text-cyan" />
           </div>
-          <h2 className="mt-6 text-3xl font-bold tracking-tight text-slate-900">
-            Warlord Access
+          <h2 className="mt-6 text-3xl font-bold tracking-widest text-white uppercase font-mono neon-text-cyan">
+            Neural Sync
           </h2>
-          <p className="mt-2 text-sm text-slate-600">
-            Sign in to manage your empire.
+          <p className="mt-2 text-xs font-mono text-slate-400 uppercase tracking-widest">
+            Establish connection to Warlord Mainframe
           </p>
         </div>
         
         <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
           {error && (
-            <div className="rounded-md bg-rose-50 p-4 text-sm text-rose-700 border border-rose-100">
-              {error}
+            <div className="rounded-md bg-rose-500/10 p-4 text-sm text-rose-400 border border-rose-500/30 flex items-center gap-3">
+              <ShieldAlert className="h-5 w-5" />
+              <span className="font-mono uppercase text-xs">{error}</span>
             </div>
           )}
           
-          <div className="space-y-4 rounded-md shadow-sm">
+          <div className="space-y-4">
             <div>
-              <label className="sr-only">Email address</label>
+              <label className="sr-only">Ident (Email)</label>
               <input
                 type="email"
                 required
-                className="relative block w-full rounded-t-md border-0 py-2.5 px-3 text-slate-900 ring-1 ring-inset ring-slate-300 placeholder:text-slate-400 focus:z-10 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
-                placeholder="admin@miracars.com"
+                className="block w-full rounded-md border border-slate-700 bg-quantum-800/80 py-3 px-4 text-slate-200 placeholder:text-slate-500 focus:border-neon-cyan focus:outline-none focus:ring-1 focus:ring-neon-cyan sm:text-sm font-mono transition-all duration-300 shadow-[inset_0_0_10px_rgba(0,0,0,0.5)]"
+                placeholder="IDENT // admin@miracars.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
               />
             </div>
             <div>
-              <label className="sr-only">Password</label>
+              <label className="sr-only">Security Key</label>
               <input
                 type="password"
                 required
-                className="relative block w-full rounded-b-md border-0 py-2.5 px-3 text-slate-900 ring-1 ring-inset ring-slate-300 placeholder:text-slate-400 focus:z-10 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
-                placeholder="password123"
+                className="block w-full rounded-md border border-slate-700 bg-quantum-800/80 py-3 px-4 text-slate-200 placeholder:text-slate-500 focus:border-neon-magenta focus:outline-none focus:ring-1 focus:ring-neon-magenta sm:text-sm font-mono transition-all duration-300 shadow-[inset_0_0_10px_rgba(0,0,0,0.5)]"
+                placeholder="KEY // **********"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
               />
@@ -89,12 +101,12 @@ export function Login() {
             <button
               type="submit"
               disabled={loading}
-              className="group relative flex w-full justify-center rounded-md bg-slate-900 px-3 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:opacity-70"
+              className="group relative flex w-full justify-center rounded-md bg-transparent border border-neon-cyan px-4 py-3 text-sm font-bold uppercase tracking-widest text-neon-cyan transition-all duration-300 hover:bg-neon-cyan hover:text-quantum-900 hover:shadow-[0_0_20px_rgba(0,243,255,0.6)] focus:outline-none disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-neon-cyan disabled:hover:shadow-none"
             >
               <span className="absolute inset-y-0 left-0 flex items-center pl-3">
-                <Lock className="h-4 w-4 text-slate-500 group-hover:text-slate-400" aria-hidden="true" />
+                <Lock className="h-4 w-4 transition-colors group-hover:text-quantum-900" aria-hidden="true" />
               </span>
-              {loading ? 'Authenticating...' : 'Sign in'}
+              {loading ? 'Authenticating...' : 'Initialize Uplink'}
             </button>
           </div>
         </form>

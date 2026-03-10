@@ -1,1 +1,66 @@
 @import "tailwindcss";
+
+@theme {
+  --font-sans: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+
+  --color-quantum-900: #0a0a0f;
+  --color-quantum-800: #12121a;
+  --color-quantum-700: #1c1c28;
+  --color-quantum-600: #292938;
+  --color-quantum-500: #3a3a4e;
+  
+  --color-neon-cyan: #00f3ff;
+  --color-neon-magenta: #ff00ea;
+  --color-neon-purple: #b52cff;
+  --color-neon-green: #00ff88;
+}
+
+body {
+  background-color: var(--color-quantum-900);
+  color: #e2e8f0;
+  font-family: var(--font-sans);
+  background-image: 
+    radial-gradient(circle at 50% 0%, rgba(0, 243, 255, 0.05), transparent 50%),
+    radial-gradient(circle at 100% 50%, rgba(255, 0, 234, 0.03), transparent 40%),
+    linear-gradient(rgba(0, 243, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 243, 255, 0.02) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 30px 30px, 30px 30px;
+  background-attachment: fixed;
+}
+
+/* Custom scrollbar for quantum theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-quantum-900);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-quantum-700);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-neon-cyan);
+}
+
+/* Quantum specific utilities */
+.glass-panel {
+  background: rgba(18, 18, 26, 0.6);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(0, 243, 255, 0.1);
+}
+
+.neon-border {
+  box-shadow: 0 0 10px rgba(0, 243, 255, 0.2), inset 0 0 10px rgba(0, 243, 255, 0.1);
+  border: 1px solid rgba(0, 243, 255, 0.4);
+}
+
+.neon-text-cyan {
+  text-shadow: 0 0 8px rgba(0, 243, 255, 0.6);
+}
+.neon-text-magenta {
+  text-shadow: 0 0 8px rgba(255, 0, 234, 0.6);
+}

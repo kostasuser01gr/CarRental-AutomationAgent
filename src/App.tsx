@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { DashboardLayout } from './components/layout/DashboardLayout';
 import { Dashboard } from './pages/Dashboard';
+import { Telemetry } from './pages/Telemetry';
 import { Calendar } from './pages/Calendar';
 import { Bookings } from './pages/Bookings';
 import { Fleet } from './pages/Fleet';
@@ -23,6 +24,7 @@ export default function App() {
         <Route element={<ProtectedRoute />}>
           <Route path="/" element={<DashboardLayout />}>
             <Route index element={<Dashboard />} />
+            <Route path="telemetry" element={<Telemetry />} />
             <Route path="calendar" element={<Calendar />} />
             <Route path="bookings" element={<Bookings />} />
             <Route path="fleet" element={<Fleet />} />
