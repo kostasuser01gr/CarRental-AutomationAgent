@@ -1,3 +1,5 @@
+import { PDFDocument, rgb } from "pdf-lib";
+
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import { initDb, db, sqlite } from './src/db/index.ts';
@@ -117,6 +119,41 @@ async function startServer() {
     res.json(vehicles);
   });
 
+  app.post('/api/vehicles/:id/damage-assessment', checkRole(['Warlord', 'Agent']), async (req, res) => {
+    try {
+      const vehicleId = parseInt(req.params.id);
+      const { checkInPhotoUrl, checkOutPhotoUrl } = req.body;
+      
+      const prompt = `
+        You are an expert automotive damage assessor.
+        Analyze these two photos of the same vehicle. Photo 1 is from Check-Out (before rental), and Photo 2 is from Check-In (after rental).
+        Identify any NEW damage (scratches, dents, cracks) present in Photo 2 that wasn't in Photo 1.
+        Respond ONLY with a JSON object: {"newDamageFound": boolean, "damageDescription": "detailed string or null", "estimatedRepairCost": number}
+        
+        Check-Out Photo: ${checkOutPhotoUrl}
+        Check-In Photo: ${checkInPhotoUrl}
+      `;
+
+      // Mocking Gemini Vision call for now (actual vision requires base64 or gs:// URIs, assuming public URLs for demo)
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+        config: { responseMimeType: "application/json", temperature: 0.1 }
+      });
+      
+      const result = JSON.parse(response.text);
+      
+      if (result.newDamageFound) {
+        await logAction((req as any).user.id, 'DAMAGE_LOGGED', 'Vehicle', vehicleId, `Damage: ${result.damageDescription}. Cost: $${result.estimatedRepairCost}`);
+      }
+
+      res.json(result);
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: 'AI Damage Assessment failed' });
+    }
+  });
+
   app.get('/api/vehicles/maintenance-predict', async (req, res) => {
     try {
       const vehicles = await db.select().from(schema.vehicles);
@@ -149,6 +186,8 @@ async function startServer() {
     }
   });
 
+
+
   // 2. Bookings API
   app.get('/api/bookings', async (req, res) => {
     const bookings = await db.select({
@@ -172,6 +211,62 @@ async function startServer() {
       .innerJoin(schema.customers, eq(schema.bookings.customer_id, schema.customers.id))
       .orderBy(desc(schema.bookings.start_date));
     res.json(bookings);
+  });
+
+  // Digital Contract API
+  app.get('/api/bookings/:id/contract', checkRole(['Warlord', 'Agent']), async (req, res) => {
+    try {
+      const bookingId = parseInt(req.params.id);
+      const bookingRecord = await db.select({
+        id: schema.bookings.id,
+        start_date: schema.bookings.start_date,
+        end_date: schema.bookings.end_date,
+        total_amount: schema.bookings.total_amount,
+        make: schema.vehicles.make,
+        model: schema.vehicles.model,
+        plate: schema.vehicles.plate,
+        customer_name: schema.customers.name,
+        customer_email: schema.customers.email
+      }).from(schema.bookings)
+        .innerJoin(schema.vehicles, eq(schema.bookings.vehicle_id, schema.vehicles.id))
+        .innerJoin(schema.customers, eq(schema.bookings.customer_id, schema.customers.id))
+        .where(eq(schema.bookings.id, bookingId))
+        .limit(1);
+
+      if (!bookingRecord.length) {
+        return res.status(404).json({ error: 'Booking not found' });
+      }
+
+      const b = bookingRecord[0];
+
+      // Create a new PDFDocument
+      const pdfDoc = await PDFDocument.create();
+      const page = pdfDoc.addPage([600, 800]);
+      
+      page.drawText('MiraCars Automation - Official Rental Agreement', { x: 50, y: 750, size: 20, color: rgb(0, 0, 0) });
+      page.drawText(`Agreement ID: ${b.id}`, { x: 50, y: 720, size: 12 });
+      page.drawText(`Customer: ${b.customer_name} (${b.customer_email})`, { x: 50, y: 700, size: 12 });
+      page.drawText(`Vehicle: ${b.make} ${b.model} - Plate: ${b.plate}`, { x: 50, y: 680, size: 12 });
+      page.drawText(`Dates: ${b.start_date} to ${b.end_date}`, { x: 50, y: 660, size: 12 });
+      page.drawText(`Total Amount: $${b.total_amount.toFixed(2)}`, { x: 50, y: 640, size: 12 });
+      
+      page.drawText('Terms and Conditions', { x: 50, y: 600, size: 14 });
+      page.drawText('1. Customer is responsible for all damages during the rental period.', { x: 50, y: 580, size: 10 });
+      page.drawText('2. Vehicle must be returned with a full tank of gas.', { x: 50, y: 560, size: 10 });
+      page.drawText('3. Digital Signature acts as a binding contract under applicable law.', { x: 50, y: 540, size: 10 });
+      
+      page.drawText('X_________________________________________', { x: 50, y: 450, size: 12 });
+      page.drawText(`Digital Signature of ${b.customer_name}`, { x: 50, y: 430, size: 10 });
+
+      const pdfBytes = await pdfDoc.save();
+      
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename=contract_${b.id}.pdf`);
+      res.send(Buffer.from(pdfBytes));
+    } catch (e) {
+      console.error('PDF Generation Error:', e);
+      res.status(500).json({ error: 'Failed to generate contract' });
+    }
   });
 
   // Advanced Reports API

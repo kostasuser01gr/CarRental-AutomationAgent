@@ -5,6 +5,7 @@ import {
   Filter,
   Download,
   Calendar as CalendarIcon,
+  FileText
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { format } from 'date-fns';
@@ -24,6 +25,30 @@ export function BookingsTable() {
         setLoading(false);
       });
   }, []);
+
+  const handleDownloadContract = async (bookingId: number) => {
+    try {
+      const token = localStorage.getItem('cre_token');
+      const headers = new Headers();
+      if (token) headers.set('Authorization', `Bearer ${token}`);
+      
+      const response = await window.fetch(`/api/bookings/${bookingId}/contract`, { headers });
+      if (!response.ok) throw new Error('Failed to fetch contract');
+      
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `contract_${bookingId}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (e) {
+      console.error(e);
+      alert('Failed to download contract.');
+    }
+  };
 
   const filteredBookings = bookings.filter(
     (booking) => {
@@ -139,9 +164,18 @@ export function BookingsTable() {
                     ${booking.total_amount.toFixed(2)}
                   </td>
                   <td className="p-4 align-middle text-right">
-                    <button className="rounded-md p-2 hover:bg-slate-100 text-slate-500 transition-colors">
-                      <MoreHorizontal className="h-4 w-4" />
-                    </button>
+                    <div className="flex items-center justify-end gap-2">
+                      <button 
+                        onClick={() => handleDownloadContract(booking.id)}
+                        className="rounded-md p-2 hover:bg-slate-100 text-slate-500 transition-colors"
+                        title="Download Contract"
+                      >
+                        <FileText className="h-4 w-4 text-indigo-600" />
+                      </button>
+                      <button className="rounded-md p-2 hover:bg-slate-100 text-slate-500 transition-colors">
+                        <MoreHorizontal className="h-4 w-4" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
