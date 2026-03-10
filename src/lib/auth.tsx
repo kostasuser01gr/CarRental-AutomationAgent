@@ -1,12 +1,15 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { z } from 'zod';
+import { STORAGE_KEYS } from './constants';
 
-interface User {
-  id: number;
-  name: string;
-  email: string;
-  role: string;
-}
+const UserSchema = z.object({
+  id: z.number(),
+  name: z.string(),
+  role: z.string()
+});
+
+interface User extends z.infer<typeof UserSchema> {}
 
 interface AuthContextType {
   user: User | null;
@@ -23,27 +26,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const storedToken = localStorage.getItem('cre_token');
-    const storedUser = localStorage.getItem('cre_user');
+    const storedToken = localStorage.getItem(STORAGE_KEYS.TOKEN);
+    const storedUserRaw = localStorage.getItem(STORAGE_KEYS.USER);
     
-    if (storedToken && storedUser) {
-      setToken(storedToken);
-      setUser(JSON.parse(storedUser));
+    if (storedToken && storedUserRaw) {
+      try {
+        const parsedUser = UserSchema.parse(JSON.parse(storedUserRaw));
+        setToken(storedToken);
+        setUser(parsedUser);
+      } catch (err) {
+        console.error("Corrupt session detected. Purging...");
+        logout();
+      }
     }
   }, []);
 
   const login = (newToken: string, newUser: User) => {
     setToken(newToken);
     setUser(newUser);
-    localStorage.setItem('cre_token', newToken);
-    localStorage.setItem('cre_user', JSON.stringify(newUser));
+    localStorage.setItem(STORAGE_KEYS.TOKEN, newToken);
+    localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(newUser));
   };
 
   const logout = () => {
     setToken(null);
     setUser(null);
-    localStorage.removeItem('cre_token');
-    localStorage.removeItem('cre_user');
+    localStorage.removeItem(STORAGE_KEYS.TOKEN);
+    localStorage.removeItem(STORAGE_KEYS.USER);
     navigate('/login');
   };
 

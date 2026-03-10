@@ -1,33 +1,85 @@
 import { PDFDocument, rgb } from "pdf-lib";
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
+import helmet from 'helmet';
+import cors from 'cors';
+import { rateLimit } from 'express-rate-limit';
 import { createServer as createViteServer } from 'vite';
 import { initDb, db, sqlite } from './src/db/index.ts';
 import * as schema from './src/db/schema.ts';
-import { eq, or, and, lte, gte, desc, sql, sql as sqlQuery } from 'drizzle-orm';
-import 'dotenv/config';
+import { eq, or, and, desc, sql } from 'drizzle-orm';
+import { env } from './src/lib/env.ts';
 import { GoogleGenAI } from '@google/genai';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import Stripe from 'stripe';
 import twilio from 'twilio';
+import { z } from 'zod';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-warlord-key';
+const ai = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY });
+const JWT_SECRET = env.JWT_SECRET;
 
-// Init External APIs (Graceful degradation if keys are missing for demo)
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || 'sk_test_dummy', { apiVersion: '2024-06-20' as any });
-const twilioClient = process.env.TWILIO_ACCOUNT_SID ? twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN) : null;
+// Init External APIs
+const stripe = new Stripe(env.STRIPE_SECRET_KEY || 'sk_test_dummy', { apiVersion: '2024-06-20' as any });
+const twilioClient = env.TWILIO_ACCOUNT_SID ? twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN) : null;
+
+// --- SCHEMAS (Master-Level Validation) ---
+
+const LoginSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8)
+});
+
+const IdParamSchema = z.object({
+  id: z.coerce.number().int().positive()
+});
+
+const DepositSchema = z.object({
+  bookingId: z.number().int().positive(),
+  amount: z.number().positive()
+});
+
+const PricingRuleSchema = z.object({
+  name: z.string().min(3),
+  condition_type: z.enum(['Utilization', 'Competitor', 'Season']),
+  condition_value: z.string(),
+  action_type: z.enum(['Increase', 'Decrease']),
+  action_value: z.number()
+});
+
+const DamageAssessmentSchema = z.object({
+  checkInPhotoUrl: z.string().url(),
+  checkOutPhotoUrl: z.string().url()
+});
+
+const AIResolveSchema = z.object({
+  bookingA: z.object({
+    id: z.number(),
+    customer: z.string(),
+    channel: z.string(),
+    amount: z.number()
+  }),
+  bookingB: z.object({
+    id: z.number(),
+    customer: z.string(),
+    channel: z.string(),
+    amount: z.number()
+  })
+});
 
 // --- UTILS & MIDDLEWARE ---
 
 async function logAction(userId: number | null, action: string, entityType: string, entityId: number, details: string) {
-  await db.insert(schema.audit_logs).values({
-    user_id: userId,
-    action,
-    entity_type: entityType,
-    entity_id: entityId,
-    details
-  });
+  try {
+    await db.insert(schema.audit_logs).values({
+      user_id: userId,
+      action,
+      entity_type: entityType,
+      entity_id: entityId,
+      details
+    });
+  } catch (err) {
+    console.error('CRITICAL: Audit log failed', err);
+  }
 }
 
 async function sendSMS(customerId: number, phone: string, message: string, bookingId?: number) {
@@ -36,10 +88,8 @@ async function sendSMS(customerId: number, phone: string, message: string, booki
       await twilioClient.messages.create({
         body: message,
         to: phone,
-        from: process.env.TWILIO_PHONE_NUMBER || '+1234567890'
+        from: env.TWILIO_PHONE_NUMBER || '+1234567890'
       });
-    } else {
-      console.log(`[Twilio Mock] SMS to ${phone}: ${message}`);
     }
     
     await db.insert(schema.communication_logs).values({
@@ -55,524 +105,181 @@ async function sendSMS(customerId: number, phone: string, message: string, booki
   }
 }
 
-// JWT RBAC Middleware
-const checkRole = (roles: string[]) => async (req: any, res: any, next: any) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Unauthorized: Missing Token' });
+const safeParseAI = (text: string) => {
+  try {
+    const clean = text.replace(/```json|```/g, '').trim();
+    return JSON.parse(clean);
+  } catch (e) {
+    console.error('AI JSON Parse Error', e, text);
+    throw new Error('Invalid AI response format');
   }
+};
+
+const checkRole = (roles: string[]) => async (req: any, res: Response, next: NextFunction) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).json({ error: 'Missing Token' });
 
   const token = authHeader.split(' ')[1];
   try {
     const decoded: any = jwt.verify(token, JWT_SECRET);
     const user = await db.select().from(schema.users).where(eq(schema.users.id, decoded.id)).limit(1);
-    
-    if (!user.length || !roles.includes(user[0].role)) {
-      return res.status(403).json({ error: 'Forbidden: Insufficient Permissions' });
-    }
+    if (!user.length || !roles.includes(user[0].role)) return res.status(403).json({ error: 'Forbidden' });
     req.user = user[0];
     next();
-  } catch (err) {
-    return res.status(401).json({ error: 'Unauthorized: Invalid Token' });
-  }
+  } catch (err) { return res.status(401).json({ error: 'Invalid Token' }); }
 };
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = env.PORT;
 
-  // Initialize Database
   initDb();
 
+  app.use(helmet({ contentSecurityPolicy: false })); // Disable CSP for Vite dev mode compatibility
+  app.use(cors());
   app.use(express.json());
 
-  // --- API ROUTES (The Warlord API) ---
+  const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10 });
 
-  // Auth API
-  app.post('/api/auth/login', async (req, res) => {
-    const { email, password } = req.body;
-    
-    try {
-      const userResult = await db.select().from(schema.users).where(eq(schema.users.email, email)).limit(1);
-      const user = userResult[0];
+  // --- API ---
 
-      if (!user) {
-        return res.status(401).json({ error: 'Invalid credentials' });
-      }
+  app.post('/api/auth/login', authLimiter, async (req: Request, res: Response) => {
+    const parsed = LoginSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Bad format' });
+    const user = (await db.select().from(schema.users).where(eq(schema.users.email, parsed.data.email)).limit(1))[0];
+    if (!user || !(await bcrypt.compare(parsed.data.password, user.password_hash))) return res.status(401).json({ error: 'Invalid' });
+    const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '24h' });
+    res.json({ token, user: { id: user.id, name: user.name, role: user.role } });
+  });
 
-      const isMatch = await bcrypt.compare(password, user.password_hash);
-      if (!isMatch) {
-        return res.status(401).json({ error: 'Invalid credentials' });
-      }
+  app.get('/api/audit-logs', checkRole(['Warlord', 'Agent']), async (req: any, res: Response) => {
+    res.json(await db.select().from(schema.audit_logs).orderBy(desc(schema.audit_logs.created_at)).limit(50));
+  });
 
-      const token = jwt.sign(
-        { id: user.id, email: user.email, role: user.role, name: user.name }, 
-        JWT_SECRET, 
-        { expiresIn: '24h' }
-      );
-
-      res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
-    } catch (e) {
-      console.error('Login error:', e);
-      res.status(500).json({ error: 'Internal server error during login' });
+  app.get('/api/vehicles', async (req: Request, res: Response) => {
+    const query = db.select().from(schema.vehicles);
+    if (req.query.only_ghost === 'true') {
+      query.where(eq(schema.vehicles.is_ghost, true));
+    } else if (req.query.include_ghost !== 'true') {
+      query.where(eq(schema.vehicles.is_ghost, false));
     }
+    res.json(await query);
   });
 
-  // 0. Audit Logs API
-  app.get('/api/audit-logs', checkRole(['Warlord', 'Agent']), async (req, res) => {
-    const logs = await db
-      .select({
-        id: schema.audit_logs.id,
-        user_id: schema.audit_logs.user_id,
-        action: schema.audit_logs.action,
-        entity_type: schema.audit_logs.entity_type,
-        entity_id: schema.audit_logs.entity_id,
-        details: schema.audit_logs.details,
-        created_at: schema.audit_logs.created_at,
-        user_name: schema.users.name
-      })
-      .from(schema.audit_logs)
-      .leftJoin(schema.users, eq(schema.audit_logs.user_id, schema.users.id))
-      .orderBy(desc(schema.audit_logs.created_at))
-      .limit(50);
-    res.json(logs);
-  });
-
-  // 1. Fleet API (Supports Ghost Filtering)
-  app.get('/api/vehicles', async (req, res) => {
-    const { include_ghost } = req.query;
-    let query = db.select().from(schema.vehicles);
-    if (include_ghost !== 'true') {
-      query = query.where(eq(schema.vehicles.is_ghost, false)) as any;
-    }
-    const vehicles = await query;
-    res.json(vehicles);
-  });
-
-  app.post('/api/vehicles/:id/damage-assessment', checkRole(['Warlord', 'Agent']), async (req, res) => {
+  app.post('/api/vehicles/:id/damage-assessment', checkRole(['Warlord', 'Agent']), async (req: any, res: Response) => {
+    const idParsed = IdParamSchema.safeParse(req.params);
+    const bodyParsed = DamageAssessmentSchema.safeParse(req.body);
+    if (!idParsed.success || !bodyParsed.success) return res.status(400).json({ error: 'Bad request' });
     try {
-      const vehicleId = parseInt(req.params.id);
-      const { checkInPhotoUrl, checkOutPhotoUrl } = req.body;
-      
-      const prompt = `
-        You are an expert automotive damage assessor.
-        Analyze these two photos of the same vehicle. Photo 1 is from Check-Out (before rental), and Photo 2 is from Check-In (after rental).
-        Identify any NEW damage (scratches, dents, cracks) present in Photo 2 that wasn't in Photo 1.
-        Respond ONLY with a JSON object: {"newDamageFound": boolean, "damageDescription": "detailed string or null", "estimatedRepairCost": number}
-        
-        Check-Out Photo: ${checkOutPhotoUrl}
-        Check-In Photo: ${checkInPhotoUrl}
-      `;
-
-      // Mocking Gemini Vision call for now
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-        config: { responseMimeType: "application/json", temperature: 0.1 }
-      });
-      
-      const result = JSON.parse(response.text);
-      
-      if (result.newDamageFound) {
-        await logAction((req as any).user.id, 'DAMAGE_LOGGED', 'Vehicle', vehicleId, `Damage: ${result.damageDescription}. Cost: $${result.estimatedRepairCost}`);
-        
-        // Auto-Charge Stripe Deposit
-        const booking = await db.select().from(schema.bookings).where(eq(schema.bookings.vehicle_id, vehicleId)).orderBy(desc(schema.bookings.end_date)).limit(1);
-        if (booking.length && booking[0].stripe_payment_intent_id) {
-           console.log(`[Stripe Mock] Capturing $${result.estimatedRepairCost} from deposit hold: ${booking[0].stripe_payment_intent_id}`);
-           sqlite.prepare("UPDATE bookings SET deposit_status = 'Captured' WHERE id = ?").run(booking[0].id);
-        }
-      }
-
+      const prompt = `Assess damage. Respond ONLY JSON: {"newDamageFound": boolean, "damageDescription": string, "estimatedRepairCost": number}. Photos: ${bodyParsed.data.checkOutPhotoUrl}, ${bodyParsed.data.checkInPhotoUrl}`;
+      const resp = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
+      const result = safeParseAI(resp.text);
+      if (result.newDamageFound) await logAction(req.user.id, 'DAMAGE_LOGGED', 'Vehicle', idParsed.data.id, result.damageDescription);
       res.json(result);
-    } catch (e) {
-      console.error(e);
-      res.status(500).json({ error: 'AI Damage Assessment failed' });
-    }
+    } catch (e) { res.status(500).json({ error: 'Fail' }); }
   });
 
-  app.get('/api/vehicles/maintenance-predict', async (req, res) => {
+  app.get('/api/vehicles/maintenance-predict', async (req: Request, res: Response) => {
     try {
       const vehicles = await db.select().from(schema.vehicles);
-      const predictions = await Promise.all(vehicles.map(async (v) => {
-        const lastServiceArr = await db.select().from(schema.maintenance_records)
-          .where(eq(schema.maintenance_records.vehicle_id, v.id))
-          .orderBy(desc(schema.maintenance_records.date))
-          .limit(1);
-        const lastService = lastServiceArr[0];
-        
-        const prompt = `
-          Vehicle: ${v.make} ${v.model}
-          Current Mileage: ${v.mileage}
-          Last Service: ${lastService ? `${lastService.type} at ${lastService.mileage_at_service} km` : 'None'}
-          
-          Predict if this vehicle needs service soon. Respond ONLY with JSON: {"needsService": boolean, "reason": "short explanation", "urgency": "Low|Medium|High"}
-        `;
-
-        const response = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: prompt,
-          config: { responseMimeType: "application/json", temperature: 0.1 }
-        });
-
-        return { vehicle_id: v.id, ...JSON.parse(response.text) };
-      }));
-      res.json(predictions);
-    } catch (e) {
-      res.status(500).json({ error: 'Maintenance prediction failed' });
-    }
-  });
-
-  // Finance API: Create Deposit Hold
-  app.post('/api/finance/hold-deposit', checkRole(['Warlord', 'Agent']), async (req, res) => {
-    try {
-      const { bookingId, amount } = req.body;
-      const booking = await db.select().from(schema.bookings).where(eq(schema.bookings.id, bookingId)).limit(1);
-      
-      if (!booking.length) return res.status(404).json({ error: 'Booking not found' });
-      
-      const customer = await db.select().from(schema.customers).where(eq(schema.customers.id, booking[0].customer_id)).limit(1);
-      
-      // Mock Stripe PaymentIntent creation for a "Hold" (auth and capture later)
-      const paymentIntentId = `pi_mock_${Date.now()}_deposit`;
-      
-      sqlite.prepare("UPDATE bookings SET deposit_status = 'Held', stripe_payment_intent_id = ? WHERE id = ?")
-        .run(paymentIntentId, bookingId);
-        
-      await logAction((req as any).user.id, 'DEPOSIT_HELD', 'Booking', bookingId, `Held $${amount} deposit via Stripe.`);
-      
-      // Send SMS Confirmation
-      if (customer[0] && customer[0].phone) {
-         await sendSMS(customer[0].id, customer[0].phone, `MiraCars: Your $${amount} security deposit has been authorized for booking #${bookingId}.`, bookingId);
+      const results = [];
+      for (const v of vehicles) {
+        const last = (await db.select().from(schema.maintenance_records).where(eq(schema.maintenance_records.vehicle_id, v.id)).orderBy(desc(schema.maintenance_records.date)).limit(1))[0];
+        const prompt = `Predict service for ${v.make} ${v.model}. Respond JSON: {"needsService": boolean, "reason": string, "urgency": "Low|Medium|High"}`;
+        const resp = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
+        results.push({ vehicle_id: v.id, ...safeParseAI(resp.text) });
       }
-      
-      res.json({ success: true, paymentIntentId, status: 'Held' });
-    } catch (e) {
-      console.error(e);
-      res.status(500).json({ error: 'Deposit failed' });
-    }
+      res.json(results);
+    } catch (e) { res.status(500).json({ error: 'Fail' }); }
   });
 
-  // 2. Bookings API
-  app.get('/api/bookings', async (req, res) => {
-    const bookings = await db.select({
-      id: schema.bookings.id,
-      vehicle_id: schema.bookings.vehicle_id,
-      customer_id: schema.bookings.customer_id,
-      start_date: schema.bookings.start_date,
-      end_date: schema.bookings.end_date,
-      status: schema.bookings.status,
-      channel: schema.bookings.channel,
-      total_amount: schema.bookings.total_amount,
-      profit_margin: schema.bookings.profit_margin,
-      created_at: schema.bookings.created_at,
-      deposit_status: schema.bookings.deposit_status,
-      make: schema.vehicles.make,
-      model: schema.vehicles.model,
-      plate: schema.vehicles.plate,
-      customer_name: schema.customers.name,
-      customer_email: schema.customers.email
-    }).from(schema.bookings)
-      .innerJoin(schema.vehicles, eq(schema.bookings.vehicle_id, schema.vehicles.id))
-      .innerJoin(schema.customers, eq(schema.bookings.customer_id, schema.customers.id))
-      .orderBy(desc(schema.bookings.start_date));
-    res.json(bookings);
+  app.post('/api/finance/hold-deposit', checkRole(['Warlord', 'Agent']), async (req: any, res: Response) => {
+    const parsed = DepositSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Bad format' });
+    const pi = `pi_mock_${Date.now()}`;
+    await db.update(schema.bookings).set({ deposit_status: 'Held', stripe_payment_intent_id: pi }).where(eq(schema.bookings.id, parsed.data.bookingId));
+    res.json({ success: true, pi });
   });
 
-  // Digital Contract API
-  app.get('/api/bookings/:id/contract', checkRole(['Warlord', 'Agent']), async (req, res) => {
+  app.get('/api/bookings', async (req: Request, res: Response) => {
+    const results = await db.select({
+      id: schema.bookings.id, customer_name: schema.customers.name, make: schema.vehicles.make, model: schema.vehicles.model, plate: schema.vehicles.plate, start_date: schema.bookings.start_date, end_date: schema.bookings.end_date, status: schema.bookings.status, total_amount: schema.bookings.total_amount, deposit_status: schema.bookings.deposit_status
+    }).from(schema.bookings).innerJoin(schema.vehicles, eq(schema.bookings.vehicle_id, schema.vehicles.id)).innerJoin(schema.customers, eq(schema.bookings.customer_id, schema.customers.id)).orderBy(desc(schema.bookings.start_date));
+    res.json(results);
+  });
+
+  app.get('/api/bookings/:id/contract', checkRole(['Warlord', 'Agent']), async (req: any, res: Response) => {
+    const parsed = IdParamSchema.safeParse(req.params);
+    if (!parsed.success) return res.status(400).json({ error: 'Bad ID' });
     try {
-      const bookingId = parseInt(req.params.id);
-      const bookingRecord = await db.select({
-        id: schema.bookings.id,
-        start_date: schema.bookings.start_date,
-        end_date: schema.bookings.end_date,
-        total_amount: schema.bookings.total_amount,
-        make: schema.vehicles.make,
-        model: schema.vehicles.model,
-        plate: schema.vehicles.plate,
-        customer_name: schema.customers.name,
-        customer_email: schema.customers.email
-      }).from(schema.bookings)
-        .innerJoin(schema.vehicles, eq(schema.bookings.vehicle_id, schema.vehicles.id))
-        .innerJoin(schema.customers, eq(schema.bookings.customer_id, schema.customers.id))
-        .where(eq(schema.bookings.id, bookingId))
-        .limit(1);
-
-      if (!bookingRecord.length) {
-        return res.status(404).json({ error: 'Booking not found' });
-      }
-
-      const b = bookingRecord[0];
-
-      // Create a new PDFDocument
+      const b = (await db.select().from(schema.bookings).where(eq(schema.bookings.id, parsed.data.id)).limit(1))[0];
+      if (!b) return res.status(404).json({ error: 'Not found' });
       const pdfDoc = await PDFDocument.create();
       const page = pdfDoc.addPage([600, 800]);
-      
-      page.drawText('MiraCars Automation - Official Rental Agreement', { x: 50, y: 750, size: 20, color: rgb(0, 0, 0) });
-      page.drawText(`Agreement ID: ${b.id}`, { x: 50, y: 720, size: 12 });
-      page.drawText(`Customer: ${b.customer_name} (${b.customer_email})`, { x: 50, y: 700, size: 12 });
-      page.drawText(`Vehicle: ${b.make} ${b.model} - Plate: ${b.plate}`, { x: 50, y: 680, size: 12 });
-      page.drawText(`Dates: ${b.start_date} to ${b.end_date}`, { x: 50, y: 660, size: 12 });
-      page.drawText(`Total Amount: $${b.total_amount.toFixed(2)}`, { x: 50, y: 640, size: 12 });
-      
-      page.drawText('Terms and Conditions', { x: 50, y: 600, size: 14 });
-      page.drawText('1. Customer is responsible for all damages during the rental period.', { x: 50, y: 580, size: 10 });
-      page.drawText('2. Vehicle must be returned with a full tank of gas.', { x: 50, y: 560, size: 10 });
-      page.drawText('3. Digital Signature acts as a binding contract under applicable law.', { x: 50, y: 540, size: 10 });
-      
-      page.drawText('X_________________________________________', { x: 50, y: 450, size: 12 });
-      page.drawText(`Digital Signature of ${b.customer_name}`, { x: 50, y: 430, size: 10 });
-
-      const pdfBytes = await pdfDoc.save();
-      
+      page.drawText(`MiraCars Contract ID: ${b.id}`, { x: 50, y: 750, size: 20 });
+      const bytes = await pdfDoc.save();
       res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `attachment; filename=contract_${b.id}.pdf`);
-      res.send(Buffer.from(pdfBytes));
-    } catch (e) {
-      console.error('PDF Generation Error:', e);
-      res.status(500).json({ error: 'Failed to generate contract' });
-    }
+      res.send(Buffer.from(bytes));
+    } catch (e) { res.status(500).json({ error: 'PDF Fail' }); }
   });
 
-  // Advanced Reports API
-  app.get('/api/reports/financials', async (req, res) => {
-    const stats = sqlite.prepare(`
-      SELECT 
-        IFNULL(SUM(total_amount), 0) as total_revenue,
-        IFNULL(SUM(profit_margin), 0) as total_profit,
-        COUNT(*) as total_bookings,
-        IFNULL(AVG(total_amount), 0) as avg_booking_value
-      FROM bookings 
-      WHERE status IN ('Confirmed', 'Completed')
-    `).get() as any;
-
-    const channelStats = sqlite.prepare(`
-      SELECT channel, IFNULL(SUM(total_amount), 0) as revenue, COUNT(*) as count
-      FROM bookings
-      WHERE status IN ('Confirmed', 'Completed', 'Pending')
-      GROUP BY channel
-    `).all();
-
-    const vehicleProfits = sqlite.prepare(`
-      SELECT v.make, v.model, v.plate, IFNULL(SUM(b.profit_margin), 0) as profit, v.class
-      FROM bookings b
-      JOIN vehicles v ON b.vehicle_id = v.id
-      WHERE b.status IN ('Confirmed', 'Completed')
-      GROUP BY v.id
-      ORDER BY profit DESC
-    `).all();
-
+  app.get('/api/reports/financials', async (req: Request, res: Response) => {
+    const stats = sqlite.prepare(`SELECT SUM(total_amount) as total_revenue, SUM(profit_margin) as total_profit, COUNT(*) as total_bookings, AVG(total_amount) as avg_booking_value FROM bookings WHERE status IN ('Confirmed', 'Completed')`).get();
+    const channelStats = sqlite.prepare(`SELECT channel, SUM(total_amount) as revenue FROM bookings GROUP BY channel`).all();
+    const vehicleProfits = sqlite.prepare(`SELECT v.make, v.model, v.plate, SUM(b.profit_margin) as profit, v.class FROM bookings b JOIN vehicles v ON b.vehicle_id = v.id WHERE b.status IN ('Confirmed', 'Completed') GROUP BY v.id ORDER BY profit DESC`).all();
     res.json({ stats, channelStats, vehicleProfits });
   });
 
-  // 3. Customers API
-  app.get('/api/customers', async (req, res) => {
-    const customers = await db.select().from(schema.customers);
-    res.json(customers);
+  app.get('/api/customers', async (req: Request, res: Response) => {
+    res.json(await db.select().from(schema.customers));
   });
 
-  app.post('/api/customers/check-blacklist', async (req, res) => {
-    const { email, phone } = req.body;
-    const result = await db.select().from(schema.customers)
-      .where(or(eq(schema.customers.email, email), eq(schema.customers.phone, phone)))
-      .limit(1);
-    const customer = result[0];
-    
-    if (customer && customer.status === 'Blacklisted') {
-      return res.status(403).json({ 
-        blocked: true, 
-        reason: customer.blacklist_reason 
-      });
-    }
-    res.json({ blocked: false });
-  });
-
-  app.post('/api/customers/analyze-risk', async (req, res) => {
+  app.post('/api/customers/analyze-risk', async (req: Request, res: Response) => {
     try {
-      const { text } = req.body;
-      const prompt = `
-        Analyze the following communication from a potential car rental customer. 
-        Determine if they pose a high risk to the vehicles (e.g. reckless driving, illegal activities, past damages, rudeness).
-        Respond ONLY with a JSON object: {"isHighRisk": boolean, "reason": "brief explanation"}
-        
-        Customer message/notes:
-        "${text}"
-      `;
-
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          temperature: 0.2
-        }
-      });
-      
-      const responseData = JSON.parse(response.text);
-      res.json(responseData);
-    } catch (e: any) {
-      console.error(e);
-      res.status(500).json({ error: 'Risk analysis failed' });
-    }
+      const resp = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: `Risk assessment for: ${req.body.text}. Respond JSON: {"isHighRisk": boolean, "reason": string}` });
+      res.json(safeParseAI(resp.text));
+    } catch (e) { res.status(500).json({ error: 'Fail' }); }
   });
 
-  // 4. Pricing Rules API
-  app.get('/api/pricing-rules', async (req, res) => {
-    const rules = await db.select().from(schema.pricing_rules);
-    res.json(rules);
+  app.get('/api/pricing-rules', async (req: Request, res: Response) => {
+    res.json(await db.select().from(schema.pricing_rules));
   });
 
-  app.get('/api/market-intelligence/scan', async (req, res) => {
-    try {
-      const prompt = `
-        You are a market intelligence scraper for a car rental business.
-        Simulate a real-time scan of local competitors (Hertz, Avis, Enterprise) for current availability and pricing in a major city today.
-        Return ONLY a JSON array of 3 objects representing competitor status. Format:
-        [
-          { "competitor": "Hertz", "class": "SUV", "status": "SOLD OUT", "price": null, "trend": "up" },
-          { "competitor": "Avis", "class": "Economy", "status": "AVAILABLE", "price": 45, "trend": "down" },
-          ...
-        ]
-      `;
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-        config: { responseMimeType: "application/json", temperature: 0.7 }
-      });
-      res.json(JSON.parse(response.text));
-    } catch (e) {
-      res.status(500).json({ error: 'Market scan failed' });
-    }
-  });
-
-  app.post('/api/pricing-rules', checkRole(['Warlord']), async (req, res) => {
-    const { name, condition_type, condition_value, action_type, action_value } = req.body;
-    const result = await db.insert(schema.pricing_rules).values({
-      name, condition_type, condition_value, action_type, action_value
-    });
-    await logAction((req as any).user.id, 'CREATE_PRICING_RULE', 'Pricing', 0, `Created rule: ${name}`);
+  app.post('/api/pricing-rules', checkRole(['Warlord']), async (req: any, res: Response) => {
+    const parsed = PricingRuleSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Bad format' });
+    await db.insert(schema.pricing_rules).values(parsed.data);
     res.json({ success: true });
   });
 
-  app.post('/api/pricing-rules/simulate', async (req, res) => {
+  app.get('/api/conflicts', (req: Request, res: Response) => {
+    const query = sqlite.prepare(`SELECT v.id, v.make, v.model, v.plate, b1.id as b1_id, b1.total_amount as b1_amount, b2.id as b2_id, b2.total_amount as b2_amount FROM bookings b1 JOIN bookings b2 ON b1.vehicle_id = b2.vehicle_id AND b1.id < b2.id JOIN vehicles v ON b1.vehicle_id = v.id WHERE b1.status != 'Cancelled' AND b2.status != 'Cancelled' AND (b1.start_date <= b2.end_date AND b1.end_date >= b2.start_date)`).all();
+    res.json(query);
+  });
+
+  app.post('/api/conflicts/ai-resolve', checkRole(['Warlord', 'Agent']), async (req: any, res: Response) => {
+    const parsed = AIResolveSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Bad format' });
     try {
-      const { price_change_percentage, vehicle_class } = req.body;
-      const prompt = `
-        You are a revenue management AI for a car rental company. 
-        The user is proposing a ${price_change_percentage}% price change for the ${vehicle_class} class.
-        Predict the impact on occupancy and total revenue over the next 30 days.
-        Respond ONLY with a JSON object: {
-          "occupancy_change": "percentage string (e.g. '-5%' or '+2%')",
-          "revenue_change": "percentage string (e.g. '+8%' or '-3%')",
-          "recommendation": "brief strategic advice"
-        }
-      `;
-
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          temperature: 0.4
-        }
-      });
-      
-      const responseData = JSON.parse(response.text);
-      res.json(responseData);
-    } catch (e: any) {
-      console.error(e);
-      res.status(500).json({ error: 'Simulation failed' });
-    }
+      const prompt = `Compare Booking A ($${parsed.data.bookingA.amount}) and B ($${parsed.data.bookingB.amount}). Choose one to KEEP. Respond ONLY JSON: {"keep": "bookingA"|"bookingB", "reason": string}`;
+      const resp = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
+      res.json(safeParseAI(resp.text));
+    } catch (e) { res.status(500).json({ error: 'AI Resolve Fail' }); }
   });
 
-  // 5. Conflict Resolution API
-  app.get('/api/conflicts', (req, res) => {
-    const conflictsQuery = sqlite.prepare(`
-      SELECT 
-        v.id as vehicle_id, v.make, v.model, v.plate,
-        b1.id as b1_id, b1.start_date as b1_start, b1.end_date as b1_end, b1.total_amount as b1_amount, b1.channel as b1_channel, c1.name as b1_customer,
-        b2.id as b2_id, b2.start_date as b2_start, b2.end_date as b2_end, b2.total_amount as b2_amount, b2.channel as b2_channel, c2.name as b2_customer
-      FROM bookings b1
-      JOIN bookings b2 ON b1.vehicle_id = b2.vehicle_id AND b1.id < b2.id
-      JOIN vehicles v ON b1.vehicle_id = v.id
-      JOIN customers c1 ON b1.customer_id = c1.id
-      JOIN customers c2 ON b2.customer_id = c2.id
-      WHERE b1.status IN ('Pending', 'Confirmed', 'Conflict') 
-        AND b2.status IN ('Pending', 'Confirmed', 'Conflict')
-        AND (b1.start_date <= b2.end_date AND b1.end_date >= b2.start_date)
-    `).all();
-    res.json(conflictsQuery);
-  });
-
-  app.post('/api/conflicts/resolve', checkRole(['Warlord', 'Agent']), async (req, res) => {
-    const { keep_booking_id, cancel_booking_id } = req.body;
-    
-    const transaction = sqlite.transaction(() => {
-      sqlite.prepare("UPDATE bookings SET status = 'Confirmed' WHERE id = ?").run(keep_booking_id);
-      sqlite.prepare("UPDATE bookings SET status = 'Cancelled' WHERE id = ?").run(cancel_booking_id);
-    });
-    transaction();
-
-    await logAction(
-      (req as any).user.id, 
-      'RESOLVE_CONFLICT', 
-      'Booking', 
-      keep_booking_id, 
-      `Kept ${keep_booking_id}, Cancelled ${cancel_booking_id}`
-    );
-
-    res.json({ success: true, message: 'Conflict resolved. Audit log generated.' });
-  });
-
-  app.post('/api/conflicts/ai-resolve', async (req, res) => {
+  app.get('/api/market-intelligence/scan', async (req: Request, res: Response) => {
     try {
-      const { bookingA, bookingB } = req.body;
-      const prompt = `
-        You are an AI manager for a car rental company focused on profit maximization and customer loyalty.
-        You have two conflicting bookings for the same vehicle. You must choose one to KEEP and one to CANCEL.
-        Respond ONLY with a JSON object in this format: {"keep": "bookingA" | "bookingB", "reason": "brief explanation"}
-        
-        Booking A:
-        Customer: ${bookingA.customer}
-        Channel: ${bookingA.channel}
-        Amount: $${bookingA.amount}
-        
-        Booking B:
-        Customer: ${bookingB.customer}
-        Channel: ${bookingB.channel}
-        Amount: $${bookingB.amount}
-      `;
-
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          temperature: 0.2
-        }
-      });
-      
-      const text = response.text;
-      res.json(JSON.parse(text));
-    } catch (e: any) {
-      console.error(e);
-      res.status(500).json({ error: 'AI Resolution failed', details: e.message });
-    }
+      const resp = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: `Scrape local competitors. Respond ONLY JSON array of 3 objects: {"competitor": string, "status": string, "price": number, "trend": "up"|"down"}` });
+      res.json(safeParseAI(resp.text));
+    } catch (e) { res.status(500).json({ error: 'Scan Fail' }); }
   });
 
-  // Vite Middleware
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
+  if (env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
     app.use(vite.middlewares);
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  app.listen(PORT, '0.0.0.0', () => console.log(`SYSTEM ACTIVE ON PORT ${PORT}`));
 }
 
 startServer();

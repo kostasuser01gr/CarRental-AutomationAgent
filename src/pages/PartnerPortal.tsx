@@ -7,11 +7,10 @@ export function PartnerPortal() {
   const [fleet, setFleet] = useState<any[]>([]);
 
   useEffect(() => {
-    // Ideally we'd pass a partner_id here, but we'll just filter ghost fleet for now
-    fetch('/api/vehicles?include_ghost=true')
+    fetch('/api/vehicles?only_ghost=true')
       .then(res => res.json())
       .then(data => {
-        setFleet(data.filter((v: any) => v.is_ghost === 1));
+        setFleet(data);
       });
   }, []);
 

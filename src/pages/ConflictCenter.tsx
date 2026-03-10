@@ -6,6 +6,7 @@ import { fetchWithAuth as fetch } from '@/lib/api';
 export function ConflictCenter() {
   const [conflicts, setConflicts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [resolving, setResolving] = useState<number | null>(null);
   const [aiResolving, setAiResolving] = useState<number | null>(null);
   const [aiDecisions, setAiDecisions] = useState<Record<number, any>>({});
 
@@ -26,19 +27,24 @@ export function ConflictCenter() {
   };
 
   const handleResolve = async (keepId: number, cancelId: number) => {
+    if (resolving !== null) return;
+    setResolving(keepId);
     try {
       await fetch('/api/conflicts/resolve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ keep_booking_id: keepId, cancel_booking_id: cancelId }),
       });
-      fetchConflicts(); // Refresh list after resolving
+      await fetchConflicts(); 
     } catch (err) {
       console.error('Failed to resolve conflict', err);
+    } finally {
+      setResolving(null);
     }
   };
 
   const handleAiResolve = async (conflict: any, index: number) => {
+    if (aiResolving !== null) return;
     setAiResolving(index);
     try {
       const res = await fetch('/api/conflicts/ai-resolve', {
@@ -69,24 +75,27 @@ export function ConflictCenter() {
   };
 
   if (loading) {
-    return <div>Loading conflicts...</div>;
+    return <div className="p-8 text-center text-neon-cyan font-mono animate-pulse">Establishing Conflict Matrix...</div>;
   }
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold tracking-tight text-slate-900">Conflict Center</h1>
+      <div className="flex items-center justify-between border-b border-neon-cyan/20 pb-4">
+        <div>
+          <h1 className="text-2xl font-bold tracking-widest text-white uppercase font-mono neon-text-cyan">Conflict Center</h1>
+          <p className="text-xs text-slate-400 uppercase tracking-widest mt-1">Resolution Engine Alpha</p>
+        </div>
         <div className="flex items-center gap-2">
-          <span className="inline-flex items-center rounded-full bg-rose-100 px-3 py-1 text-sm font-medium text-rose-800">
-            <AlertTriangle className="mr-2 h-4 w-4" />
-            {conflicts.length} Active Conflicts
+          <span className="inline-flex items-center rounded-full bg-rose-500/20 px-3 py-1 text-[10px] font-bold uppercase text-rose-400 border border-rose-500/30">
+            <AlertTriangle className="mr-2 h-3.5 w-3.5" />
+            {conflicts.length} Active Collisions
           </span>
         </div>
       </div>
 
       {conflicts.length === 0 && (
-        <div className="p-6 bg-slate-50 rounded-xl border border-slate-200 text-center text-slate-500">
-          No active conflicts detected.
+        <div className="p-12 glass-panel rounded-xl border border-dashed border-slate-700 text-center text-slate-500 font-mono text-sm">
+          No temporal anomalies detected in booking schedule.
         </div>
       )}
 
@@ -94,121 +103,101 @@ export function ConflictCenter() {
         {conflicts.map((conflict, index) => (
           <div
             key={`${conflict.b1_id}-${conflict.b2_id}`}
-            className="overflow-hidden rounded-xl border-2 border-rose-100 bg-white shadow-sm"
+            className="overflow-hidden rounded-xl border border-rose-500/30 glass-panel shadow-lg"
           >
-            <div className="border-b border-rose-100 bg-rose-50/50 px-6 py-4">
+            <div className="border-b border-rose-500/20 bg-rose-500/5 px-6 py-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <div className="rounded-full bg-rose-100 p-2">
-                    <AlertTriangle className="h-5 w-5 text-rose-600" />
+                  <div className="rounded-full bg-rose-500/20 p-2 shadow-[0_0_10px_rgba(244,63,94,0.2)]">
+                    <AlertTriangle className="h-5 w-5 text-rose-500" />
                   </div>
                   <div>
-                    <h3 className="font-semibold text-slate-900">Conflict Detected</h3>
-                    <p className="text-sm text-slate-500">
-                      Double booking for <span className="font-medium text-slate-900">{conflict.make} {conflict.model} ({conflict.plate})</span>
+                    <h3 className="font-bold text-slate-200 font-mono uppercase tracking-tight">Overlap Detected</h3>
+                    <p className="text-xs text-slate-400">
+                      Collision for <span className="text-neon-cyan">{conflict.make} {conflict.model}</span>
                     </p>
                   </div>
                 </div>
                 <button 
                   onClick={() => handleAiResolve(conflict, index)}
-                  disabled={aiResolving === index}
-                  className="flex items-center gap-2 text-sm font-medium bg-slate-900 text-white px-3 py-1.5 rounded-md hover:bg-slate-800 disabled:opacity-50"
+                  disabled={aiResolving !== null}
+                  className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest bg-transparent border border-neon-cyan text-neon-cyan px-4 py-2 rounded-md hover:bg-neon-cyan/10 transition-all disabled:opacity-50"
                 >
                   <BrainCircuit className="h-4 w-4" />
-                  {aiResolving === index ? 'AI Resolving...' : 'Ask AI to Decide'}
+                  {aiResolving === index ? 'Processing...' : 'Run Neural Resolve'}
                 </button>
               </div>
             </div>
 
             {aiDecisions[index] && (
-              <div className="bg-emerald-50 border-b border-emerald-100 px-6 py-3">
+              <div className="bg-neon-cyan/5 border-b border-neon-cyan/20 px-6 py-3">
                 <div className="flex items-start gap-3">
-                  <BrainCircuit className="h-5 w-5 text-emerald-600 mt-0.5" />
+                  <BrainCircuit className="h-5 w-5 text-neon-cyan mt-0.5" />
                   <div>
-                    <h4 className="font-semibold text-emerald-900">AI Recommendation: Keep {aiDecisions[index].keep === 'bookingA' ? 'Booking A' : 'Booking B'}</h4>
-                    <p className="text-sm text-emerald-800">{aiDecisions[index].reason}</p>
+                    <h4 className="font-bold text-neon-cyan text-[10px] uppercase tracking-widest">Warlord Recommendation: Keep {aiDecisions[index].keep === 'bookingA' ? 'Node Alpha' : 'Node Beta'}</h4>
+                    <p className="text-xs text-slate-300 mt-1 italic">{aiDecisions[index].reason}</p>
                   </div>
                 </div>
               </div>
             )}
 
-            <div className="grid md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-slate-100">
+            <div className="grid md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-slate-800">
               {/* Booking A */}
-              <div className={cn("p-6", aiDecisions[index]?.keep === 'bookingA' && "bg-emerald-50/30")}>
+              <div className={cn("p-6 transition-colors duration-500", aiDecisions[index]?.keep === 'bookingA' && "bg-neon-cyan/5")}>
                 <div className="mb-4 flex items-center justify-between">
-                  <span className="rounded bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600">
-                    Booking A (ID: {conflict.b1_id})
+                  <span className="rounded bg-slate-800 px-2 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-widest border border-slate-700">
+                    Node Alpha
                   </span>
-                  <span className="text-xs text-slate-400">{conflict.b1_start} to {conflict.b1_end}</span>
+                  <span className="text-[10px] font-mono text-slate-500 uppercase tracking-tighter">ID: {conflict.b1_id}</span>
                 </div>
                 <div className="space-y-4">
                   <div>
-                    <div className="text-sm text-slate-500">Customer</div>
-                    <div className="font-medium text-slate-900">{conflict.b1_customer}</div>
+                    <div className="text-[10px] text-slate-500 uppercase font-bold">Subject</div>
+                    <div className="font-medium text-slate-200">{conflict.b1_customer}</div>
                   </div>
-                  <div className="flex justify-between">
-                    <div>
-                      <div className="text-sm text-slate-500">Channel</div>
-                      <div className="flex items-center gap-1 font-medium text-slate-900">
-                        <span className={cn(
-                          "h-2 w-2 rounded-full",
-                          conflict.b1_channel === 'Localrent' ? "bg-violet-500" :
-                          conflict.b1_channel === 'Karpadu' ? "bg-orange-500" : "bg-blue-500"
-                        )} />
-                        {conflict.b1_channel}
-                      </div>
-                    </div>
+                  <div className="flex justify-between items-end">
                     <div className="text-right">
-                      <div className="text-sm text-slate-500">Amount</div>
-                      <div className="font-mono font-medium text-slate-900">${conflict.b1_amount}</div>
+                      <div className="text-[10px] text-slate-500 uppercase font-bold">Yield</div>
+                      <div className="font-mono font-bold text-neon-cyan text-lg">${conflict.b1_amount}</div>
                     </div>
                   </div>
                   <button 
                     onClick={() => handleResolve(conflict.b1_id, conflict.b2_id)}
-                    className="flex w-full items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200"
+                    disabled={resolving !== null}
+                    className="flex w-full items-center justify-center gap-2 rounded-md border border-neon-cyan/30 bg-transparent px-4 py-2.5 text-[10px] font-bold uppercase tracking-widest text-neon-cyan hover:bg-neon-cyan/10 hover:border-neon-cyan transition-all"
                   >
                     <Check className="h-4 w-4" />
-                    Keep This Booking
+                    {resolving === conflict.b1_id ? 'Authorizing...' : 'Authorize Alpha'}
                   </button>
                 </div>
               </div>
 
               {/* Booking B */}
-              <div className={cn("p-6", aiDecisions[index]?.keep === 'bookingB' && "bg-emerald-50/30")}>
+              <div className={cn("p-6 transition-colors duration-500", aiDecisions[index]?.keep === 'bookingB' && "bg-neon-cyan/5")}>
                 <div className="mb-4 flex items-center justify-between">
-                  <span className="rounded bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600">
-                    Booking B (ID: {conflict.b2_id})
+                  <span className="rounded bg-slate-800 px-2 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-widest border border-slate-700">
+                    Node Beta
                   </span>
-                  <span className="text-xs text-slate-400">{conflict.b2_start} to {conflict.b2_end}</span>
+                  <span className="text-[10px] font-mono text-slate-500 uppercase tracking-tighter">ID: {conflict.b2_id}</span>
                 </div>
                 <div className="space-y-4">
                   <div>
-                    <div className="text-sm text-slate-500">Customer</div>
-                    <div className="font-medium text-slate-900">{conflict.b2_customer}</div>
+                    <div className="text-[10px] text-slate-500 uppercase font-bold">Subject</div>
+                    <div className="font-medium text-slate-200">{conflict.b2_customer}</div>
                   </div>
-                  <div className="flex justify-between">
-                    <div>
-                      <div className="text-sm text-slate-500">Channel</div>
-                      <div className="flex items-center gap-1 font-medium text-slate-900">
-                        <span className={cn(
-                          "h-2 w-2 rounded-full",
-                          conflict.b2_channel === 'Localrent' ? "bg-violet-500" :
-                          conflict.b2_channel === 'Karpadu' ? "bg-orange-500" : "bg-blue-500"
-                        )} />
-                        {conflict.b2_channel}
-                      </div>
-                    </div>
+                  <div className="flex justify-between items-end">
                     <div className="text-right">
-                      <div className="text-sm text-slate-500">Amount</div>
-                      <div className="font-mono font-medium text-slate-900">${conflict.b2_amount}</div>
+                      <div className="text-[10px] text-slate-500 uppercase font-bold">Yield</div>
+                      <div className="font-mono font-bold text-neon-cyan text-lg">${conflict.b2_amount}</div>
                     </div>
                   </div>
                   <button 
                     onClick={() => handleResolve(conflict.b2_id, conflict.b1_id)}
-                    className="flex w-full items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200"
+                    disabled={resolving !== null}
+                    className="flex w-full items-center justify-center gap-2 rounded-md border border-neon-magenta/30 bg-transparent px-4 py-2.5 text-[10px] font-bold uppercase tracking-widest text-neon-magenta hover:bg-neon-magenta/10 hover:border-neon-magenta transition-all"
                   >
                     <Check className="h-4 w-4" />
-                    Keep This Booking
+                    {resolving === conflict.b2_id ? 'Authorizing...' : 'Authorize Beta'}
                   </button>
                 </div>
               </div>
