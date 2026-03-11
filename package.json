@@ -50,6 +50,7 @@
     "@types/react-router-dom": "^5.3.3",
     "@types/twilio": "^3.19.2",
     "@vitejs/plugin-react": "^5.1.4",
+    "@vitest/coverage-v8": "^4.0.18",
     "autoprefixer": "^10.4.21",
     "drizzle-kit": "^0.31.9",
     "jsdom": "^28.1.0",

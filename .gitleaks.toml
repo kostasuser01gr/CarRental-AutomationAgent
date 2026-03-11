@@ -1,0 +1,14 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Ignore local untracked environment file"
+paths = ['''^\.env$''']
+
+[[allowlists]]
+description = "Ignore generated coverage artifacts"
+paths = ['''^coverage/''']
+
+[[allowlists]]
+description = "Ignore historical test-only placeholder secret string"
+regexes = ['''test-secret-at-least-32-chars-long-for-warlord''']
