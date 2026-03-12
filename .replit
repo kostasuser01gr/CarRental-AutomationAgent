@@ -8,5 +8,6 @@ NODE_ENV = "development"
 channel = "stable-23_11"
 
 [deployment]
-run = ["npm", "run", "dev"]
+build = ["sh", "-c", "npm ci && npm run build"]
+run = ["npm", "run", "start"]
 deploymentTarget = "nodejs"

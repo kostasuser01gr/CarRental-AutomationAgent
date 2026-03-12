@@ -4,6 +4,8 @@ import helmet from 'helmet';
 import cors from 'cors';
 import { rateLimit } from 'express-rate-limit';
 import { createServer as createViteServer } from 'vite';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { initDb, db, sqlite } from './src/db/index.ts';
 import * as schema from './src/db/schema.ts';
 import { eq, or, and, desc, sql } from 'drizzle-orm';
@@ -11,16 +13,17 @@ import { env } from './src/lib/env.ts';
 import { GoogleGenAI } from '@google/genai';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
-import Stripe from 'stripe';
 import twilio from 'twilio';
 import { z } from 'zod';
 
 const ai = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY });
 const JWT_SECRET = env.JWT_SECRET;
-
-// Init External APIs
-const stripe = new Stripe(env.STRIPE_SECRET_KEY || 'sk_test_dummy', { apiVersion: '2024-06-20' as any });
-const twilioClient = env.TWILIO_ACCOUNT_SID ? twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN) : null;
+const twilioClient = env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN
+  ? twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN)
+  : null;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const distPath = path.join(__dirname, 'dist');
 
 // --- SCHEMAS (Master-Level Validation) ---
 
@@ -84,11 +87,12 @@ async function logAction(userId: number | null, action: string, entityType: stri
 
 async function sendSMS(customerId: number, phone: string, message: string, bookingId?: number) {
   try {
-    if (twilioClient) {
+    const canSendSms = Boolean(twilioClient && env.TWILIO_PHONE_NUMBER);
+    if (twilioClient && env.TWILIO_PHONE_NUMBER) {
       await twilioClient.messages.create({
         body: message,
         to: phone,
-        from: env.TWILIO_PHONE_NUMBER || '+1234567890'
+        from: env.TWILIO_PHONE_NUMBER
       });
     }
     
@@ -98,7 +102,7 @@ async function sendSMS(customerId: number, phone: string, message: string, booki
       type: 'SMS',
       direction: 'Outbound',
       content: message,
-      status: 'Sent'
+      status: canSendSms ? 'Sent' : 'Skipped'
     });
   } catch (error) {
     console.error('SMS Failed', error);
@@ -110,7 +114,7 @@ const safeParseAI = (text: string) => {
     const clean = text.replace(/```json|```/g, '').trim();
     return JSON.parse(clean);
   } catch (e) {
-    console.error('AI JSON Parse Error', e, text);
+    console.error('AI JSON Parse Error', e);
     throw new Error('Invalid AI response format');
   }
 };
@@ -133,7 +137,10 @@ async function startServer() {
   const app = express();
   const PORT = env.PORT;
 
-  initDb();
+  initDb({
+    seedDemoData: env.NODE_ENV !== 'production' && env.SEED_DEMO_DATA,
+    demoUserPassword: env.DEMO_USER_PASSWORD,
+  });
 
   app.use(helmet({ contentSecurityPolicy: false })); // Disable CSP for Vite dev mode compatibility
   app.use(cors());
@@ -142,6 +149,9 @@ async function startServer() {
   const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10 });
 
   // --- API ---
+  app.get('/api/healthz', (_req: Request, res: Response) => {
+    res.status(200).json({ status: 'ok' });
+  });
 
   app.post('/api/auth/login', authLimiter, async (req: Request, res: Response) => {
     const parsed = LoginSchema.safeParse(req.body);
@@ -274,12 +284,20 @@ async function startServer() {
     } catch (e) { res.status(500).json({ error: 'Scan Fail' }); }
   });
 
-  if (env.NODE_ENV !== 'production') {
+  if (env.NODE_ENV === 'production') {
+    app.use(express.static(distPath));
+    app.get(/^(?!\/api\/).*/, (_req: Request, res: Response) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  } else {
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
     app.use(vite.middlewares);
   }
 
-  app.listen(PORT, '0.0.0.0', () => console.log(`SYSTEM ACTIVE ON PORT ${PORT}`));
+  app.listen(PORT, '0.0.0.0', () => console.log(`Server listening on 0.0.0.0:${PORT}`));
 }
 
-startServer();
+startServer().catch((error) => {
+  console.error('Server startup failed', error);
+  process.exit(1);
+});

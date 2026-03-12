@@ -1,20 +1,103 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# MiraCars Automation
 
-# Run and deploy your AI Studio app
+Production-focused car rental automation app with a React frontend, Express API, SQLite/Drizzle data layer, and AI-assisted operational endpoints.
 
-This contains everything you need to run your app locally.
+## Prerequisites
 
-View your app in AI Studio: https://ai.studio/apps/987f6d7a-0f50-46b9-a5b1-e32986e8565c
+- Node.js 20+
+- npm 10+
 
-## Run Locally
+## Install
 
-**Prerequisites:**  Node.js
+```bash
+npm ci
+```
 
+## Environment
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+Create `.env` from `.env.example`.
+
+Required:
+- `GEMINI_API_KEY`
+- `JWT_SECRET` (32+ chars)
+
+Runtime:
+- `NODE_ENV` (`development` | `production` | `test`)
+- `PORT` (default `3000`)
+
+Optional integrations:
+- `STRIPE_SECRET_KEY`
+- `STRIPE_WEBHOOK_SECRET`
+- `TWILIO_ACCOUNT_SID`
+- `TWILIO_AUTH_TOKEN`
+- `TWILIO_PHONE_NUMBER`
+- `RESEND_API_KEY`
+
+Optional demo seed controls (development/test only):
+- `SEED_DEMO_DATA=true`
+- `DEMO_USER_PASSWORD` (12+ chars, required when seeding is enabled)
+
+## Local Development
+
+```bash
+npm run dev
+```
+
+## Test
+
+```bash
+npm run test
+```
+
+Watch mode:
+
+```bash
+npm run test:watch
+```
+
+## Lint
+
+```bash
+npm run lint
+```
+
+## Build
+
+```bash
+npm run build
+```
+
+## Start Production Server
+
+```bash
+npm run start
+```
+
+Production behavior:
+- Binds on `0.0.0.0:$PORT`
+- Serves built frontend from `dist/`
+- Provides health endpoint at `/api/healthz`
+- Uses Vite middleware only in non-production mode
+
+## Replit Deployment
+
+Configured in `.replit` with:
+- Build: `npm ci && npm run build`
+- Run: `npm run start`
+
+Local workspace run remains `npm run dev`.
+
+## Security Notes
+
+- Do not commit `.env` or any real credentials.
+- Current tree should be scanned with:
+
+```bash
+gitleaks detect --source . --no-banner --redact
+```
+
+If any secret was previously committed in history, treat it as compromised:
+1. Rotate affected credentials immediately.
+2. Rewrite git history to purge the secret-bearing commits.
+3. Force-push rewritten history.
+4. Re-run secret scanning and close related alerts.
