@@ -17,22 +17,36 @@ sqlite.pragma('foreign_keys = ON');
 
 export const db = drizzle(sqlite, { schema });
 
-export function initDb() {
+type InitDbOptions = {
+  seedDemoData?: boolean;
+  demoUserPassword?: string;
+};
+
+export function initDb(options: InitDbOptions = {}) {
+  const { seedDemoData = false, demoUserPassword } = options;
+
   console.log('Synchronizing database via Drizzle Migrations...');
   
   // Run migrations
   migrate(db, { migrationsFolder: './drizzle' });
 
   console.log('Database initialized successfully.');
-  seedData();
+  if (seedDemoData) {
+    if (!demoUserPassword || demoUserPassword.length < 12) {
+      console.warn('SEED_DEMO_DATA=true but DEMO_USER_PASSWORD is missing or too short. Skipping demo seed.');
+      return;
+    }
+
+    seedData(demoUserPassword);
+  }
 }
 
-function seedData() {
+function seedData(demoUserPassword: string) {
   const vehicleCount = sqlite.prepare('SELECT count(*) as count FROM vehicles').get() as { count: number };
   if (vehicleCount.count === 0) {
-    console.log('Seeding initial Warlord data...');
+    console.log('Seeding demo data...');
     
-    const defaultPassword = bcrypt.hashSync('password123', 10);
+    const defaultPassword = bcrypt.hashSync(demoUserPassword, 10);
 
     // Seed Users
     const insertUser = sqlite.prepare(`INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)`);
