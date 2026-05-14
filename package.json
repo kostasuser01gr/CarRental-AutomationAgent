@@ -52,7 +52,7 @@
     "@vitejs/plugin-react": "^5.1.4",
     "@vitest/coverage-v8": "^4.0.18",
     "autoprefixer": "^10.4.21",
-    "drizzle-kit": "^0.31.9",
+    "drizzle-kit": "^0.18.1",
     "jsdom": "^28.1.0",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
